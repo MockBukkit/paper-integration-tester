@@ -159,7 +159,7 @@ public class CodeGenerator {
     }
 
     private TypeVariableName[] getTypeVariableNames(Type[] genericInfo) {
-        List<TypeVariableName> typeVariableNames = new ArrayList();
+        List<TypeVariableName> typeVariableNames = new ArrayList<>();
         for (int i = 0; i < genericInfo.length; i++) {
             Type type = genericInfo[i];
             if (type.getTypeName().equals("java.lang.Object")) {
@@ -183,8 +183,6 @@ public class CodeGenerator {
                     .orElse(name);
         } catch (ClassNotFoundException e) {
             return name;
-        } catch (Throwable e) {
-            return name;
         }
     }
 
@@ -198,7 +196,7 @@ public class CodeGenerator {
                 prev = string;
             } else {
                 String finalPrev = prev;
-                clazz = Arrays.stream(clazz.getClasses()).filter(aClass -> aClass.getName().equals(finalPrev + "$" + string)).findFirst()
+                clazz = Arrays.stream(clazz.getClasses()).filter(aClass -> (finalPrev + "$" + string).contains(aClass.getName())).findFirst()
                         .orElseThrow(() -> new NoSuchElementException(className));
                 prev = prev + "$" + string;
             }
@@ -335,9 +333,9 @@ public class CodeGenerator {
         for (int i = 0; i < parameters.length; i++) {
             TypeVariableName type;
             if (genericParameterInfo[i] instanceof ParameterizedType parameterizedType) {
-                type = TypeVariableName.get(parameterizedType.getRawType().getTypeName(), getTypeVariableNames(parameterizedType.getActualTypeArguments()));
+                type = TypeVariableName.get(fixTypeVariableName(parameterizedType.getRawType().getTypeName()), getTypeVariableNames(parameterizedType.getActualTypeArguments()));
             } else {
-                type = TypeVariableName.get(genericParameterInfo[i].getTypeName());
+                type = TypeVariableName.get(fixTypeVariableName(genericParameterInfo[i].getTypeName()));
             }
             ParameterSpec parameterSpec = ParameterSpec.builder(type, parameters[i].getName())
                     .addAnnotations(getAnnotationSpec(parameters[i]))

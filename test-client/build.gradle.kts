@@ -25,7 +25,7 @@ sourceSets {
 
 dependencies {
     implementation("org.junit.jupiter:junit-jupiter:5.11.3")
-    compileOnly("io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT")
+    compileOnly("io.papermc.paper:paper-api:1.21.3-R0.1-SNAPSHOT")
 }
 
 tasks.test {

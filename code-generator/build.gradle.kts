@@ -15,6 +15,7 @@ dependencies {
     implementation("com.palantir.javapoet:javapoet:0.6.0")
     implementation("io.papermc.paper:paper-api:1.21.3-R0.1-SNAPSHOT")
     implementation("io.github.classgraph:classgraph:4.8.177")
+    implementation("org.mockito:mockito-core:5.15.2")
 }
 
 tasks {
