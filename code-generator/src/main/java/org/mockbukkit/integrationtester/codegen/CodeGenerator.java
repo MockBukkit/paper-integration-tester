@@ -1,21 +1,18 @@
 package org.mockbukkit.integrationtester.codegen;
 
-import com.google.common.base.Preconditions;
 import com.palantir.javapoet.*;
 import io.github.classgraph.ClassGraph;
 import io.github.classgraph.ClassInfo;
 import io.github.classgraph.ClassInfoList;
 import io.github.classgraph.ScanResult;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import javax.lang.model.element.Modifier;
 import java.io.File;
 import java.io.IOException;
 import java.lang.annotation.Annotation;
-import java.lang.reflect.AccessFlag;
-import java.lang.reflect.AnnotatedElement;
-import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
+import java.lang.reflect.*;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -88,12 +85,15 @@ public class CodeGenerator {
         ClassName className = classNames.get(classToReplicate);
         String simplifiedName = className.simpleName() + "Impl";
         List<MethodSpec> methodSpecs = generateMethods(classToReplicate, false, simplifiedName);
-        TypeSpec mirror = TypeSpec.classBuilder(simplifiedName)
+        TypeSpec.Builder mirror = TypeSpec.classBuilder(simplifiedName)
                 .addMethods(methodSpecs)
-                .addSuperinterface(className)
-                .build();
-        JavaFile javaFile = JavaFile.builder(className.packageName(), mirror).build();
-
+                .addSuperinterface(className);
+        for (@NotNull TypeVariable<? extends Class<?>> typeParameter : classToReplicate.getTypeParameters()) {
+            String name = typeParameter.getName();
+            Type[] genericInfo = typeParameter.getBounds();
+            mirror.addTypeVariable(TypeVariableName.get(name, getTypeVariableNames(genericInfo)));
+        }
+        JavaFile javaFile = JavaFile.builder(className.packageName(), mirror.build()).build();
         try {
             if (!outputFolder.exists() && !outputFolder.mkdirs()) {
                 throw new IOException("Could not generate directory, possible permission issue");
@@ -109,7 +109,7 @@ public class CodeGenerator {
         boolean canHaveSuperClass = false;
         TypeSpec.Builder typeSpecBuilder;
         ClassName className = classNames.get(classToReplicate);
-        if(className == null) {
+        if (className == null) {
             throw new NullPointerException(classToReplicate.getName());
         }
         if (classToReplicate.isInterface()) {
@@ -140,6 +140,11 @@ public class CodeGenerator {
                 }
             }
         }
+        for (@NotNull TypeVariable<? extends Class<?>> typeParameter : classToReplicate.getTypeParameters()) {
+            String name = typeParameter.getName();
+            Type[] genericInfo = typeParameter.getBounds();
+            mirror.addTypeVariable(TypeVariableName.get(name, getTypeVariableNames(genericInfo)));
+        }
         JavaFile javaFile = JavaFile.builder(className.packageName(), mirror.build()).build();
 
         try {
@@ -153,6 +158,54 @@ public class CodeGenerator {
         return needsImplementation;
     }
 
+    private TypeVariableName[] getTypeVariableNames(Type[] genericInfo) {
+        List<TypeVariableName> typeVariableNames = new ArrayList();
+        for (int i = 0; i < genericInfo.length; i++) {
+            Type type = genericInfo[i];
+            if (type.getTypeName().equals("java.lang.Object")) {
+                continue;
+            }
+            if (type instanceof ParameterizedType parameterizedType) {
+                String typeName = fixTypeVariableName(parameterizedType.getRawType().getTypeName());
+                typeVariableNames.add(TypeVariableName.get(typeName, getTypeVariableNames(parameterizedType.getActualTypeArguments())));
+                continue;
+            }
+            typeVariableNames.add(TypeVariableName.get(fixTypeVariableName(type.getTypeName())));
+        }
+        return typeVariableNames.toArray(TypeVariableName[]::new);
+    }
+
+    private String fixTypeVariableName(String name) {
+        try {
+            Class<?> clazz = getClass(name);
+            return Optional.ofNullable(classNames.get(clazz))
+                    .map(ClassName::canonicalName)
+                    .orElse(name);
+        } catch (ClassNotFoundException e) {
+            return name;
+        } catch (Throwable e) {
+            return name;
+        }
+    }
+
+    private Class<?> getClass(String className) throws ClassNotFoundException {
+        String[] strings = className.split("\\$");
+        Class<?> clazz = null;
+        String prev = "";
+        for (String string : strings) {
+            if (clazz == null) {
+                clazz = Class.forName(string);
+                prev = string;
+            } else {
+                String finalPrev = prev;
+                clazz = Arrays.stream(clazz.getClasses()).filter(aClass -> aClass.getName().equals(finalPrev + "$" + string)).findFirst()
+                        .orElseThrow(() -> new NoSuchElementException(className));
+                prev = prev + "$" + string;
+            }
+        }
+        return clazz;
+    }
+
     private List<MethodSpec> generateMethods(Class<?> classToReplicate, boolean isAbstract, String className) {
         List<MethodSpec> methodSpecs = new ArrayList<>();
         Method[] methods = isAbstract ? classToReplicate.getDeclaredMethods() : classToReplicate.getMethods();
@@ -164,6 +217,11 @@ public class CodeGenerator {
                     .addAnnotations(getAnnotationSpec(method))
                     .addParameters(getParameterSpec(method))
                     .returns(sanitizeClass(method.getReturnType()));
+            for (@NotNull TypeVariable<Method> typeParameter : method.getTypeParameters()) {
+                String name = typeParameter.getName();
+                Type[] genericInfo = typeParameter.getBounds();
+                methodSpec.addTypeVariable(TypeVariableName.get(name, getTypeVariableNames(genericInfo)));
+            }
             if (java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
                 String parameterString = className + ".class" + generateParameterString(method);
                 ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
@@ -272,10 +330,17 @@ public class CodeGenerator {
 
     private List<ParameterSpec> getParameterSpec(Method methodInfo) {
         List<ParameterSpec> output = new ArrayList<>();
-        for (Parameter parameterInfo : methodInfo.getParameters()) {
-            TypeName typeName = sanitizeClass(parameterInfo.getType());
-            ParameterSpec parameterSpec = ParameterSpec.builder(typeName, parameterInfo.getName())
-                    .addAnnotations(getAnnotationSpec(parameterInfo))
+        Type[] genericParameterInfo = methodInfo.getGenericParameterTypes();
+        Parameter[] parameters = methodInfo.getParameters();
+        for (int i = 0; i < parameters.length; i++) {
+            TypeVariableName type;
+            if (genericParameterInfo[i] instanceof ParameterizedType parameterizedType) {
+                type = TypeVariableName.get(parameterizedType.getRawType().getTypeName(), getTypeVariableNames(parameterizedType.getActualTypeArguments()));
+            } else {
+                type = TypeVariableName.get(genericParameterInfo[i].getTypeName());
+            }
+            ParameterSpec parameterSpec = ParameterSpec.builder(type, parameters[i].getName())
+                    .addAnnotations(getAnnotationSpec(parameters[i]))
                     .build();
             output.add(parameterSpec);
         }
