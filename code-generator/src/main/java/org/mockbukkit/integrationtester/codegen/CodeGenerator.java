@@ -11,15 +11,14 @@ import org.jetbrains.annotations.Nullable;
 import javax.lang.model.element.Modifier;
 import java.io.File;
 import java.io.IOException;
-import java.lang.annotation.Annotation;
-import java.lang.reflect.*;
+import java.lang.reflect.Method;
+import java.lang.reflect.TypeVariable;
 import java.util.*;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 public class CodeGenerator {
 
-    private final File outputFolder;
     private final String targetPackageName;
     private final Map<Class<?>, ClassName> classNames = new HashMap<>();
     private final static Pattern PACKAGE_NAME = Pattern.compile("^(.+)\\.[A-Z]");
@@ -30,21 +29,42 @@ public class CodeGenerator {
             return;
         }
         File outputFolder = new File(args[0]);
-        CodeGenerator codeGenerator = new CodeGenerator(outputFolder, "org.mockbukkit.integrationtester");
+        CodeGenerator codeGenerator = new CodeGenerator("org.mockbukkit.integrationtester");
         List<ClassInfo> outerClasses = new ArrayList<>();
         for (String operationIncludedPackage : operationIncludedPackages()) {
-            outerClasses.addAll(codeGenerator.fillClassesInPackage(operationIncludedPackage));
+            outerClasses.addAll(codeGenerator.findClassesInPackage(operationIncludedPackage));
         }
-        outerClasses.forEach(codeGenerator::fillClass);
+        outerClasses.forEach(classInfo -> {
+            Pair<TypeSpec, TypeSpec> typeSpec = codeGenerator.createTypeSpec(classInfo);
+            JavaFile javaFile = JavaFile.builder(codeGenerator.classNames.get(classInfo.loadClass()).packageName(), typeSpec.t1()).build();
+            try {
+                if (!outputFolder.exists() && !outputFolder.mkdirs()) {
+                    throw new IOException("Could not generate directory, possible permission issue");
+                }
+                javaFile.writeTo(outputFolder);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+            if (typeSpec.t2() != null) {
+                JavaFile javaFile2 = JavaFile.builder(codeGenerator.classNames.get(classInfo.loadClass()).packageName(), typeSpec.t2()).build();
+                try {
+                    if (!outputFolder.exists() && !outputFolder.mkdirs()) {
+                        throw new IOException("Could not generate directory, possible permission issue");
+                    }
+                    javaFile2.writeTo(outputFolder);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        });
     }
 
 
-    public CodeGenerator(File outputFolder, String targetPackageName) {
-        this.outputFolder = outputFolder;
+    public CodeGenerator(String targetPackageName) {
         this.targetPackageName = targetPackageName;
     }
 
-    private List<ClassInfo> fillClassesInPackage(String packageName) {
+    private List<ClassInfo> findClassesInPackage(String packageName) {
         try (ScanResult scanResult = new ClassGraph()
                 .enableAllInfo()
                 .acceptPackages(packageName)
@@ -61,202 +81,134 @@ public class CodeGenerator {
     private Map<Class<?>, ClassName> determineClassNames(List<ClassInfo> classInfos, String packageSuffix) {
         Map<Class<?>, ClassName> output = new HashMap<>();
         for (ClassInfo classInfo : classInfos) {
-            output.putAll(determineClassNames(classInfo.getInnerClasses(), packageSuffix + "." + "Internal" + modifySimpleClassName(classInfo.loadClass())));
+            Map<Class<?>, ClassName> classNameMap = determineClassNames(classInfo.getInnerClasses(), packageSuffix + "." + classInfo.getSimpleName());
+            output.putAll(classNameMap);
             String modifiedPackage = getModifiedPackage(classInfo.loadClass());
             if (modifiedPackage != null) {
-                output.put(classInfo.loadClass(), ClassName.get(modifiedPackage + packageSuffix, modifySimpleClassName(classInfo.loadClass())));
+                output.put(classInfo.loadClass(), ClassName.get(modifiedPackage + packageSuffix, classInfo.getSimpleName().endsWith("Impl") ? classInfo.getSimpleName() + "Impl0" : classInfo.getSimpleName()));
             }
         }
         return output;
     }
 
-    private void fillClass(ClassInfo classInfo) {
+    private Pair<TypeSpec, @Nullable TypeSpec> createTypeSpec(ClassInfo classInfo) {
         Class<?> classToReplicate = classInfo.loadClass();
-        classInfo.getInnerClasses().stream()
+        List<TypeSpec> children = classInfo.getInnerClasses().stream()
                 .filter(classInfo1 -> (classInfo1.isPublic() || classInfo1.isPackageVisible()) && !classInfo1.isAnonymousInnerClass())
-                .forEach(this::fillClass);
-        boolean needsImplementation = generateInterface(classToReplicate);
-        if (needsImplementation) {
-            generateImplementation(classToReplicate);
+                .map(this::createTypeSpec)
+                .flatMap(pair -> Stream.of(pair.t1(), pair.t2()))
+                .filter(Objects::nonNull)
+                .toList();
+        TypeSpec apiElement = generateApiElement(classToReplicate, children);
+        TypeSpec implementation = null;
+        if (classInfo.isInterface()) {
+            implementation = generateImplementation(classToReplicate);
         }
+        return new Pair<>(apiElement, implementation);
     }
 
-    private void generateImplementation(Class<?> classToReplicate) {
+    private TypeSpec generateImplementation(Class<?> classToReplicate) {
         ClassName className = classNames.get(classToReplicate);
         String simplifiedName = className.simpleName() + "Impl";
-        List<MethodSpec> methodSpecs = generateMethods(classToReplicate, false, simplifiedName);
-        TypeSpec.Builder mirror = TypeSpec.classBuilder(simplifiedName)
-                .addMethods(methodSpecs)
-                .addSuperinterface(className);
+        TypeSpec.Builder mirror = TypeSpec.classBuilder(simplifiedName);
+        Map<Class<?>, Map<String, String>> redefinitions = Util.compileTypeVariableConversions(classToReplicate, classNames, new HashMap<>());
+        Arrays.stream(classToReplicate.getGenericInterfaces())
+                .map(interfaceInstance -> Util.getTypeName(interfaceInstance, redefinitions.getOrDefault(classToReplicate, new HashMap<>()), classNames))
+                .forEach(mirror::addSuperinterface);
+        if (classToReplicate.getSuperclass() != Object.class && classToReplicate.getSuperclass() != null) {
+            mirror.superclass(Util.getTypeName(classToReplicate.getSuperclass(), redefinitions.get(classToReplicate), classNames));
+        }
+        List<MethodSpec> methodSpecs = generateMethods(classToReplicate, false, simplifiedName, redefinitions);
+        mirror.addMethods(methodSpecs);
         for (@NotNull TypeVariable<? extends Class<?>> typeParameter : classToReplicate.getTypeParameters()) {
-            String name = typeParameter.getName();
-            Type[] genericInfo = typeParameter.getBounds();
-            mirror.addTypeVariable(TypeVariableName.get(name, getTypeVariableNames(genericInfo)));
+            mirror.addTypeVariable(Util.getTypeVariableName(typeParameter, classNames));
         }
-        JavaFile javaFile = JavaFile.builder(className.packageName(), mirror.build()).build();
-        try {
-            if (!outputFolder.exists() && !outputFolder.mkdirs()) {
-                throw new IOException("Could not generate directory, possible permission issue");
-            }
-            javaFile.writeTo(outputFolder);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+        if (java.lang.reflect.Modifier.isStatic(classToReplicate.getModifiers())) {
+            mirror.addModifiers(Modifier.STATIC);
         }
+        if (java.lang.reflect.Modifier.isPublic(classToReplicate.getModifiers())) {
+            mirror.addModifiers(Modifier.PUBLIC);
+        }
+        return mirror.build();
     }
 
-    private boolean generateInterface(Class<?> classToReplicate) {
-        boolean needsImplementation = false;
+    private TypeSpec generateApiElement(Class<?> classToReplicate, Collection<TypeSpec> children) {
         boolean canHaveSuperClass = false;
         TypeSpec.Builder typeSpecBuilder;
         ClassName className = classNames.get(classToReplicate);
+        Map<Class<?>, Map<String, String>> redefinitions = Util.compileTypeVariableConversions(classToReplicate, classNames, new HashMap<>());
         if (className == null) {
             throw new NullPointerException(classToReplicate.getName());
         }
         if (classToReplicate.isInterface()) {
             typeSpecBuilder = TypeSpec.interfaceBuilder(className)
-                    .addMethods(generateMethods(classToReplicate, true, className.simpleName()));
-            needsImplementation = true;
+                    .addMethods(generateMethods(classToReplicate, true, className.simpleName(), redefinitions));
         } else if (classToReplicate.isRecord()) {
             typeSpecBuilder = TypeSpec.recordBuilder(className)
-                    .addMethods(generateMethods(classToReplicate, false, className.simpleName()));
+                    .addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
         } else if (classToReplicate.isEnum()) {
             typeSpecBuilder = TypeSpec.enumBuilder(className)
-                    .addMethods(generateMethods(classToReplicate, false, className.simpleName()));
+                    .addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
         } else {
             typeSpecBuilder = TypeSpec.classBuilder(className)
-                    .addMethods(generateMethods(classToReplicate, false, className.simpleName()));
+                    .addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
             canHaveSuperClass = true;
         }
-
-        TypeSpec.Builder mirror = typeSpecBuilder
+        typeSpecBuilder
                 .addModifiers(Modifier.PUBLIC)
                 .addSuperinterfaces(
-                        Arrays.stream(classToReplicate.getInterfaces()).map(this::sanitizeClass).toList());
+                        Arrays.stream(classToReplicate.getGenericInterfaces())
+                                .map(typeName -> Util.getTypeName(typeName, redefinitions.getOrDefault(classToReplicate, new HashMap<>()), classNames))
+                                .toList()
+                );
         if (canHaveSuperClass && classToReplicate.getSuperclass() != Object.class) {
-            for (String operationIncluded : operationIncludedPackages()) {
-                if (classToReplicate.getSuperclass().getPackageName().startsWith(operationIncluded)) {
-                    mirror.superclass(sanitizeClass(classToReplicate.getSuperclass()));
-                    break;
-                }
-            }
+            typeSpecBuilder.superclass(Util.getTypeName(classToReplicate.getGenericSuperclass(), new HashMap<>(), classNames));
         }
         for (@NotNull TypeVariable<? extends Class<?>> typeParameter : classToReplicate.getTypeParameters()) {
-            String name = typeParameter.getName();
-            Type[] genericInfo = typeParameter.getBounds();
-            mirror.addTypeVariable(TypeVariableName.get(name, getTypeVariableNames(genericInfo)));
+            typeSpecBuilder.addTypeVariable(Util.getTypeVariableName(typeParameter, classNames));
         }
-        JavaFile javaFile = JavaFile.builder(className.packageName(), mirror.build()).build();
-
-        try {
-            if (!outputFolder.exists() && !outputFolder.mkdirs()) {
-                throw new IOException("Could not generate directory, possible permission issue");
-            }
-            javaFile.writeTo(outputFolder);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+        for (TypeSpec typeSpec : children) {
+            typeSpecBuilder.addType(typeSpec);
         }
-        return needsImplementation;
+        if (java.lang.reflect.Modifier.isStatic(classToReplicate.getModifiers())) {
+            typeSpecBuilder.addModifiers(Modifier.STATIC);
+        }
+        if (java.lang.reflect.Modifier.isPublic(classToReplicate.getModifiers())) {
+            typeSpecBuilder.addModifiers(Modifier.PUBLIC);
+        }
+        return typeSpecBuilder.build();
     }
 
-    private TypeVariableName[] getTypeVariableNames(Type[] genericInfo) {
-        List<TypeVariableName> typeVariableNames = new ArrayList<>();
-        for (int i = 0; i < genericInfo.length; i++) {
-            Type type = genericInfo[i];
-            if (type.getTypeName().equals("java.lang.Object")) {
-                continue;
-            }
-            if (type instanceof ParameterizedType parameterizedType) {
-                String typeName = fixTypeVariableName(parameterizedType.getRawType().getTypeName());
-                typeVariableNames.add(TypeVariableName.get(typeName, getTypeVariableNames(parameterizedType.getActualTypeArguments())));
-                continue;
-            }
-            typeVariableNames.add(TypeVariableName.get(fixTypeVariableName(type.getTypeName())));
-        }
-        return typeVariableNames.toArray(TypeVariableName[]::new);
-    }
-
-    private String fixTypeVariableName(String name) {
-        try {
-            Class<?> clazz = getClass(name);
-            return Optional.ofNullable(classNames.get(clazz))
-                    .map(ClassName::canonicalName)
-                    .orElse(name);
-        } catch (ClassNotFoundException e) {
-            return name;
-        }
-    }
-
-    private Class<?> getClass(String className) throws ClassNotFoundException {
-        String[] strings = className.split("\\$");
-        Class<?> clazz = null;
-        String prev = "";
-        for (String string : strings) {
-            if (clazz == null) {
-                clazz = Class.forName(string);
-                prev = string;
-            } else {
-                String finalPrev = prev;
-                clazz = Arrays.stream(clazz.getClasses()).filter(aClass -> (finalPrev + "$" + string).contains(aClass.getName())).findFirst()
-                        .orElseThrow(() -> new NoSuchElementException(className));
-                prev = prev + "$" + string;
-            }
-        }
-        return clazz;
-    }
-
-    private List<MethodSpec> generateMethods(Class<?> classToReplicate, boolean isAbstract, String className) {
-        List<MethodSpec> methodSpecs = new ArrayList<>();
+    private List<MethodSpec> generateMethods(Class<?> classToReplicate, boolean isAbstract, String className, Map<Class<?>, Map<String, String>> redefinitions) {
         Method[] methods = isAbstract ? classToReplicate.getDeclaredMethods() : classToReplicate.getMethods();
+        List<MethodData> methodData = new ArrayList<>();
         for (Method method : methods) {
-            if (isMethodBanned(method, classToReplicate) || ignoreMethod(method, methods)) {
+            if (isMethodBanned(method, classToReplicate)) {
                 continue;
             }
-            MethodSpec.Builder methodSpec = MethodSpec.methodBuilder(method.getName())
-                    .addAnnotations(getAnnotationSpec(method))
-                    .addParameters(getParameterSpec(method))
-                    .returns(sanitizeClass(method.getReturnType()));
-            for (@NotNull TypeVariable<Method> typeParameter : method.getTypeParameters()) {
-                String name = typeParameter.getName();
-                Type[] genericInfo = typeParameter.getBounds();
-                methodSpec.addTypeVariable(TypeVariableName.get(name, getTypeVariableNames(genericInfo)));
+            if (!java.lang.reflect.Modifier.isPublic(method.getModifiers())) {
+                continue;
             }
-            if (java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
-                String parameterString = className + ".class" + generateParameterString(method);
-                ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
-                methodSpec.addStatement((method.getReturnType() != void.class ? "return " : "") + "$T.handle($S, $L)", mirrorHandler, method.getName(), parameterString);
-                methodSpec.addModifiers(Modifier.PUBLIC, Modifier.STATIC);
-            } else if (isAbstract) {
-                methodSpec.addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT);
-            } else {
-                String parameterString = "this" + generateParameterString(method);
-                methodSpec.addModifiers(Modifier.PUBLIC);
-                ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
-                methodSpec.addStatement((method.getReturnType() != void.class ? "return " : "") + "$T.handle($S, $L)", mirrorHandler, method.getName(), parameterString);
+            if (!isAbstract && method.isDefault()) {
+                continue;
             }
-
-            methodSpecs.add(methodSpec.build());
+            insertMethodData(MethodData.from(method, classNames, isAbstract, redefinitions.getOrDefault(method.getDeclaringClass(), new HashMap<>())), methodData);
         }
-        return methodSpecs;
+        return methodData.stream().map(methodData1 -> methodData1.toMethodSpec(className)).toList();
     }
 
-    private boolean ignoreMethod(Method method, Method[] methods) {
-        int methodPos = Integer.MAX_VALUE;
-        for (int i = 0; i < methods.length; i++) {
-            Method otherMethod = methods[i];
-            if (method == otherMethod) {
-                methodPos = Math.min(i, methodPos);
+    private void insertMethodData(MethodData methodData1, List<MethodData> methodData) {
+        for (int i = 0; i < methodData.size(); i++) {
+            MethodData methodData2 = methodData.get(i);
+            if (!methodData2.equals(methodData1)) {
                 continue;
             }
-            if (!method.getName().equals(otherMethod.getName()) || !Arrays.equals(method.getParameterTypes(), otherMethod.getParameterTypes())) {
-                continue;
+            if (methodData1.precedes(methodData2)) {
+                methodData.set(i, methodData1);
             }
-            methodPos = Math.min(i, methodPos);
-            if (otherMethod.getReturnType().isAssignableFrom(method.getReturnType()) && (!method.getReturnType().isAssignableFrom(otherMethod.getReturnType()) || i >= methodPos)) {
-                return true;
-            }
-
+            return;
         }
-        return false;
+        methodData.add(methodData1);
     }
 
     private boolean isMethodBanned(Method method, Class<?> classToReplicate) {
@@ -304,47 +256,6 @@ public class CodeGenerator {
         return true;
     }
 
-    private String generateParameterString(Method method) {
-        StringBuilder stringBuilder = new StringBuilder();
-        for (Parameter parameter : method.getParameters()) {
-            stringBuilder.append(", ").append(parameter.getName());
-        }
-        return stringBuilder.toString();
-    }
-
-    private List<AnnotationSpec> getAnnotationSpec(AnnotatedElement annotatedElement) {
-        List<AnnotationSpec> output = new ArrayList<>();
-        for (Annotation annotationInfo : annotatedElement.getAnnotations()) {
-            if (annotationInfo.annotationType().getPackageName().startsWith("jdk.internal")) {
-                continue;
-            }
-            if (!annotationInfo.annotationType().accessFlags().contains(AccessFlag.PUBLIC)) {
-                continue;
-            }
-            output.add(AnnotationSpec.builder(annotationInfo.annotationType()).build());
-        }
-        return output;
-    }
-
-    private List<ParameterSpec> getParameterSpec(Method methodInfo) {
-        List<ParameterSpec> output = new ArrayList<>();
-        Type[] genericParameterInfo = methodInfo.getGenericParameterTypes();
-        Parameter[] parameters = methodInfo.getParameters();
-        for (int i = 0; i < parameters.length; i++) {
-            TypeVariableName type;
-            if (genericParameterInfo[i] instanceof ParameterizedType parameterizedType) {
-                type = TypeVariableName.get(fixTypeVariableName(parameterizedType.getRawType().getTypeName()), getTypeVariableNames(parameterizedType.getActualTypeArguments()));
-            } else {
-                type = TypeVariableName.get(fixTypeVariableName(genericParameterInfo[i].getTypeName()));
-            }
-            ParameterSpec parameterSpec = ParameterSpec.builder(type, parameters[i].getName())
-                    .addAnnotations(getAnnotationSpec(parameters[i]))
-                    .build();
-            output.add(parameterSpec);
-        }
-        return output;
-    }
-
     private TypeName sanitizeClass(Class<?> inputClass) {
         if (classNames.containsKey(inputClass)) {
             return classNames.get(inputClass);
@@ -363,18 +274,8 @@ public class CodeGenerator {
         return null;
     }
 
-    private String modifySimpleClassName(Class<?> inputClass) {
-        Matcher matcher = Pattern.compile("\\[.*$").matcher(inputClass.getSimpleName());
-        if (matcher.find()) {
-            String brackets = matcher.group();
-            return matcher.replaceAll("") + "Mirror" + brackets;
-        } else {
-            return inputClass.getSimpleName() + "Mirror";
-        }
-    }
-
     private static List<String> operationIncludedPackages() {
-        return List.of("co.aikar", "com.destroystokyo.paper", "io.papermc.paper", "org.bukkit", "org.spigotmc", "net.kyori.adventure");
+        return List.of("co.aikar", "com.destroystokyo.paper", "io.papermc.paper", "org.bukkit", "org.spigotmc", "net.kyori");
     }
 }
 
