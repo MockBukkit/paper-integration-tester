@@ -64,11 +64,13 @@ public class Util {
         Class<?>[] interfaces = owningClass.getInterfaces();
         for (int i = 0; i < interfaces.length; i++) {
             Type interfaceType = genericInterfaces[i];
+            Type[] actualTypeArguments;
             if (!(interfaceType instanceof ParameterizedType parameterizedType)) {
-                continue;
+                actualTypeArguments = new Type[0];
+            } else {
+                actualTypeArguments = parameterizedType.getActualTypeArguments();
             }
             TypeVariable<?>[] superClassTypeVariables = interfaces[i].getTypeParameters();
-            Type[] actualTypeArguments = parameterizedType.getActualTypeArguments();
             Map<String, String> redefinitions = getRedefinitions(actualTypeArguments, superClassTypeVariables, classNames, childRedefinitions);
             Map<Class<?>, Map<String, String>> temp = compileTypeVariableConversions(interfaces[i], classNames, redefinitions);
             temp.put(interfaces[i], redefinitions);
