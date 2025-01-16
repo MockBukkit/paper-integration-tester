@@ -7,7 +7,10 @@ import org.jetbrains.annotations.NotNull;
 import javax.lang.model.element.Modifier;
 import java.lang.reflect.Method;
 import java.lang.reflect.TypeVariable;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 
 public class MethodData {
     private final ParameterData[] parameterData;
@@ -32,7 +35,7 @@ public class MethodData {
         this.isPublic = isPublic;
     }
 
-    public static MethodData from(Method method, Map<Class<?>, ClassName> classNames, boolean isImplementation, Map<String, String> typeConversions) {
+    public static MethodData from(Method method, Map<Class<?>, ClassName> classNames, boolean isImplementation, boolean isEnum, Map<String, String> typeConversions) {
         List<TypeVariableName> methodGenerics = new ArrayList<>();
         for (@NotNull TypeVariable<Method> typeParameter : method.getTypeParameters()) {
             methodGenerics.add(Util.getTypeVariableName(typeParameter, classNames, typeConversions));
@@ -44,7 +47,7 @@ public class MethodData {
                 Util.getAnnotationTypeNames(method, classNames).toArray(String[]::new),
                 methodGenerics.toArray(TypeVariableName[]::new),
                 java.lang.reflect.Modifier.isStatic(method.getModifiers()),
-                java.lang.reflect.Modifier.isAbstract(method.getModifiers()) && !isImplementation,
+                java.lang.reflect.Modifier.isAbstract(method.getModifiers()) && !isImplementation && !isEnum,
                 method.isDefault(),
                 java.lang.reflect.Modifier.isPublic(method.getModifiers())
         );
@@ -99,7 +102,7 @@ public class MethodData {
     }
 
     public boolean precedes(MethodData other) {
-        if(other.parameterData.length != parameterData.length) {
+        if (other.parameterData.length != parameterData.length) {
             return false;
         }
         for (int i = 0; i < parameterData.length; i++) {

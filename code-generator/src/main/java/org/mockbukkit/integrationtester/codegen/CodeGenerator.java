@@ -11,6 +11,7 @@ import org.jetbrains.annotations.Nullable;
 import javax.lang.model.element.Modifier;
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.TypeVariable;
 import java.util.*;
@@ -21,6 +22,7 @@ public class CodeGenerator {
 
     private final String targetPackageName;
     private final Map<Class<?>, ClassName> classNames = new HashMap<>();
+    private final Set<Class<?>> alreadyScanned = new HashSet<>();
     private final static Pattern PACKAGE_NAME = Pattern.compile("^(.+)\\.[A-Z]");
 
     public static void main(String[] args) {
@@ -64,14 +66,9 @@ public class CodeGenerator {
     }
 
     private List<ClassInfo> findClassesInPackage(String packageName) {
-        try (ScanResult scanResult = new ClassGraph()
-                .enableAllInfo()
-                .acceptPackages(packageName)
-                .scan()) {
+        try (ScanResult scanResult = new ClassGraph().enableAllInfo().acceptPackages(packageName).scan()) {
             ClassInfoList classInfoList = scanResult.getAllClasses();
-            List<ClassInfo> classInfos = classInfoList.stream()
-                    .filter(classInfo -> (classInfo.isPublic() || classInfo.isPackageVisible()) && !classInfo.isInnerClass())
-                    .toList();
+            List<ClassInfo> classInfos = classInfoList.stream().filter(classInfo -> (classInfo.isPublic() || classInfo.isPackageVisible()) && !classInfo.isInnerClass()).toList();
             classNames.putAll(determineClassNames(classInfos, ""));
             return classInfos;
         }
@@ -80,24 +77,32 @@ public class CodeGenerator {
     private Map<Class<?>, ClassName> determineClassNames(List<ClassInfo> classInfos, String packageSuffix) {
         Map<Class<?>, ClassName> output = new HashMap<>();
         for (ClassInfo classInfo : classInfos) {
-            Map<Class<?>, ClassName> classNameMap = determineClassNames(classInfo.getInnerClasses(), packageSuffix + "." + classInfo.getSimpleName());
+            if (alreadyScanned.contains(classInfo.loadClass())) {
+                continue;
+            }
+            alreadyScanned.add(classInfo.loadClass());
+            Map<Class<?>, ClassName> classNameMap = determineClassNames(classInfo.getInnerClasses(), packageSuffix + "." + modifyClassName(classInfo));
             output.putAll(classNameMap);
             String modifiedPackage = getModifiedPackage(classInfo.loadClass());
             if (modifiedPackage != null) {
-                output.put(classInfo.loadClass(), ClassName.get(modifiedPackage + packageSuffix, classInfo.getSimpleName().endsWith("Impl") ? classInfo.getSimpleName() + "0" : classInfo.getSimpleName()));
+                output.put(classInfo.loadClass(), ClassName.get(modifiedPackage + packageSuffix, modifyClassName(classInfo)));
             }
         }
         return output;
+    }
+
+    private String modifyClassName(ClassInfo classInfo) {
+        return classInfo.getSimpleName().endsWith("Impl") ? classInfo.getSimpleName() + "0" : classInfo.getSimpleName();
     }
 
     private Pair<TypeSpec, @Nullable TypeSpec> createTypeSpec(ClassInfo classInfo) {
         Class<?> classToReplicate = classInfo.loadClass();
         List<TypeSpec> children = classInfo.getInnerClasses().stream()
                 .filter(classInfo1 -> (classInfo1.isPublic() || classInfo1.isPackageVisible()) && !classInfo1.isAnonymousInnerClass())
+                .filter(classInfo2 -> alreadyScanned.remove(classInfo2.loadClass()))
                 .map(this::createTypeSpec)
                 .flatMap(pair -> Stream.of(pair.t1(), pair.t2()))
-                .filter(Objects::nonNull)
-                .toList();
+                .filter(Objects::nonNull).toList();
         TypeSpec apiElement = generateApiElement(classToReplicate, children);
         TypeSpec implementation = null;
         if (classInfo.isInterface()) {
@@ -111,17 +116,17 @@ public class CodeGenerator {
         String simplifiedName = className.simpleName() + "Impl";
         TypeSpec.Builder mirror = TypeSpec.classBuilder(simplifiedName);
         Map<Class<?>, Map<String, String>> redefinitions = Util.compileTypeVariableConversions(classToReplicate, classNames, new HashMap<>());
-        Arrays.stream(classToReplicate.getGenericInterfaces())
-                .map(interfaceInstance -> Util.getTypeName(interfaceInstance, redefinitions.getOrDefault(classToReplicate, new HashMap<>()), classNames))
-                .forEach(mirror::addSuperinterface);
-        if (classToReplicate.getSuperclass() != Object.class && classToReplicate.getSuperclass() != null) {
-            mirror.superclass(Util.getTypeName(classToReplicate.getSuperclass(), redefinitions.get(classToReplicate), classNames));
+        if (classToReplicate.getTypeParameters().length > 0) {
+            mirror.addSuperinterface(ParameterizedTypeName.get(classNames.get(classToReplicate), Util.getTypeNames(classToReplicate.getTypeParameters(), new HashMap<>(), classNames, true)));
+            for (TypeVariable<?> typeVariable : classToReplicate.getTypeParameters()) {
+                mirror.addTypeVariable(Util.getTypeVariableName(typeVariable, classNames, redefinitions.getOrDefault(classToReplicate, new HashMap<>())));
+            }
+        } else {
+            mirror.addSuperinterface(classNames.get(classToReplicate));
         }
         List<MethodSpec> methodSpecs = generateMethods(classToReplicate, true, simplifiedName, redefinitions);
         mirror.addMethods(methodSpecs);
-        for (@NotNull TypeVariable<? extends Class<?>> typeParameter : classToReplicate.getTypeParameters()) {
-            mirror.addTypeVariable(Util.getTypeVariableName(typeParameter, classNames, new HashMap<>()));
-        }
+        fillFields(mirror, classToReplicate, redefinitions);
         if (java.lang.reflect.Modifier.isStatic(classToReplicate.getModifiers())) {
             mirror.addModifiers(Modifier.STATIC);
         }
@@ -140,29 +145,20 @@ public class CodeGenerator {
         }
         Map<Class<?>, Map<String, String>> redefinitions = Util.compileTypeVariableConversions(classToReplicate, classNames, new HashMap<>());
         if (classToReplicate.isAnnotation()) {
-            typeSpecBuilder = TypeSpec.annotationBuilder(className)
-                    .addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
+            typeSpecBuilder = TypeSpec.annotationBuilder(className).addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
         } else if (classToReplicate.isInterface()) {
-            typeSpecBuilder = TypeSpec.interfaceBuilder(className)
-                    .addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
+            typeSpecBuilder = TypeSpec.interfaceBuilder(className).addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
         } else if (classToReplicate.isRecord()) {
-            typeSpecBuilder = TypeSpec.recordBuilder(className)
-                    .addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
+            typeSpecBuilder = TypeSpec.recordBuilder(className).addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
         } else if (classToReplicate.isEnum()) {
-            typeSpecBuilder = TypeSpec.enumBuilder(className)
-                    .addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
+            typeSpecBuilder = TypeSpec.enumBuilder(className).addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
         } else {
-            typeSpecBuilder = TypeSpec.classBuilder(className)
-                    .addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
+            typeSpecBuilder = TypeSpec.classBuilder(className).addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
             canHaveSuperClass = true;
         }
+        fillFields(typeSpecBuilder, classToReplicate, redefinitions);
         if (!classToReplicate.isAnnotation()) {
-            typeSpecBuilder
-                    .addSuperinterfaces(
-                            Arrays.stream(classToReplicate.getGenericInterfaces())
-                                    .map(typeName -> Util.getTypeName(typeName, redefinitions.getOrDefault(classToReplicate, new HashMap<>()), classNames))
-                                    .toList()
-                    );
+            typeSpecBuilder.addSuperinterfaces(Arrays.stream(classToReplicate.getGenericInterfaces()).map(typeName -> Util.getTypeName(typeName, redefinitions.getOrDefault(classToReplicate, new HashMap<>()), classNames)).toList());
         }
         if (canHaveSuperClass && classToReplicate.getSuperclass() != Object.class) {
             typeSpecBuilder.superclass(Util.getTypeName(classToReplicate.getGenericSuperclass(), new HashMap<>(), classNames));
@@ -186,8 +182,7 @@ public class CodeGenerator {
     }
 
     private List<MethodSpec> generateMethods(Class<?> classToReplicate, boolean isImplementation, String className, Map<Class<?>, Map<String, String>> redefinitions) {
-        Method[] methods = !isImplementation ? classToReplicate.getDeclaredMethods() : Stream
-                .concat(Arrays.stream(findNecessaryMethods(classToReplicate)), Arrays.stream(classToReplicate.getMethods())).toArray(Method[]::new);
+        Method[] methods = !isImplementation ? classToReplicate.getDeclaredMethods() : Stream.concat(Arrays.stream(findNecessaryMethods(classToReplicate)), Arrays.stream(classToReplicate.getMethods())).toArray(Method[]::new);
         List<Pair<MethodData, Method>> methodData = new ArrayList<>();
         for (Method method : methods) {
             if (isMethodBanned(method, classToReplicate)) {
@@ -202,11 +197,9 @@ public class CodeGenerator {
             if (method.isBridge()) {
                 continue;
             }
-            insertMethodData(method, MethodData.from(method, classNames, isImplementation, redefinitions.getOrDefault(method.getDeclaringClass(), new HashMap<>())), methodData);
+            insertMethodData(method, MethodData.from(method, classNames, isImplementation, classToReplicate.isEnum(), redefinitions.getOrDefault(method.getDeclaringClass(), new HashMap<>())), methodData);
         }
-        return methodData.stream()
-                .map(Pair::t1)
-                .map(methodData1 -> methodData1.toMethodSpec(className)).toList();
+        return methodData.stream().map(Pair::t1).map(methodData1 -> methodData1.toMethodSpec(className)).toList();
     }
 
     private Method[] findNecessaryMethods(Class<?> clazz) {
@@ -244,6 +237,45 @@ public class CodeGenerator {
             }
         }
         return true;
+    }
+
+    private void fillFields(TypeSpec.Builder typeSpec, Class<?> clazz, Map<Class<?>, Map<String, String>> redefinitions) {
+        List<FieldSpec> fields = new ArrayList<>();
+        for (Field field : clazz.getDeclaredFields()) {
+            FieldSpec.Builder fieldSpec = FieldSpec.builder(Util.getTypeName(field.getGenericType(), redefinitions.getOrDefault(clazz, new HashMap<>()), classNames), field.getName());
+            if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                fieldSpec.addModifiers(Modifier.STATIC);
+            }
+            if (!java.lang.reflect.Modifier.isPublic(field.getModifiers())) {
+                continue;
+            }
+            if (java.lang.reflect.Modifier.isFinal(field.getModifiers())) {
+                fieldSpec.addModifiers(Modifier.FINAL);
+            }
+            if (field.isEnumConstant()) {
+                typeSpec.addEnumConstant(field.getName());
+                continue;
+            }
+            if (field.getType().isPrimitive() && java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                try {
+                    Object value = field.get(null);
+                    fieldSpec.initializer(CodeBlock.builder().addStatement("$L", value).build());
+                    continue;
+                } catch (IllegalAccessException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            fieldSpec.addModifiers(Modifier.PUBLIC);
+            fieldSpec.addAnnotations(Util.getAnnotationTypeNames(field, classNames).stream().map(ClassName::bestGuess).map(AnnotationSpec::builder).map(AnnotationSpec.Builder::build).toList());
+            if (java.lang.reflect.Modifier.isFinal(field.getModifiers()) && java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
+                fieldSpec.initializer(CodeBlock.builder()
+                        .addStatement("$T.newStaticVariable($S, $T.class)", mirrorHandler, field.getName(), classNames.getOrDefault(clazz, ClassName.get(clazz)))
+                        .build());
+            }
+            fields.add(fieldSpec.build());
+        }
+        typeSpec.addFields(fields);
     }
 
     private boolean isMethodBanned(Method method, Class<?> classToReplicate) {

@@ -9,4 +9,8 @@ public class MirrorHandler {
     public static <T> T handleStatic(String functionName, Class<?> clazz, Object... parameters){
         return null;
     }
+
+    public static <T> T newStaticVariable(String variableName, Class<?> clazz){
+        return null;
+    }
 }
