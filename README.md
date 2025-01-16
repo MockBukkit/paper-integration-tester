@@ -55,4 +55,11 @@ class MyTestCase {
 }
 ```
 
+## For developers
+
+To test code gen, simply run this command: 
+```
+./gradlew code-generator:run
+```
+
 
