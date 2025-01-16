@@ -47,7 +47,7 @@ class MyTestCase {
             // With predefined uuid
             Pair<Player,PlayerClient> thorinwasher = integrationTester.addPlayer("thorinwasher", UUID.randomUUID());
             Location location = new Location(Bukkit.getServer().getWorlds()[0], x, y, z);
-            notch.first().teleport(); // Teleport the player on the serverside
+            notch.first().teleport(location); // Teleport the player on the serverside
             notch.second().removeBlock(location); // This will await until the action has been completed
             assertEquals(Material.AIR, location.getBlock().getType());
         }
