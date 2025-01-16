@@ -1,6 +1,9 @@
 package org.mockbukkit.integrationtester.codegen;
 
-import com.palantir.javapoet.*;
+import com.palantir.javapoet.AnnotationSpec;
+import com.palantir.javapoet.ClassName;
+import com.palantir.javapoet.ParameterSpec;
+import com.palantir.javapoet.TypeName;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
@@ -32,7 +35,7 @@ public class ParameterData {
         for (int i = 0; i < parameters.length; i++) {
             output.add(new ParameterData(parameters[i].getName(),
                     Util.getTypeName(genericParameterInfo[i], redefinitions, classNames),
-                    Util.getAnnotationTypeNames(parameters[i], classNames, redefinitions)));
+                    Util.getAnnotationTypeNames(parameters[i], classNames)));
         }
         return output.toArray(ParameterData[]::new);
     }
@@ -47,7 +50,7 @@ public class ParameterData {
 
     @Override
     public int hashCode() {
-        return rawTypeString().hashCode();
+        return type.toString().hashCode();
     }
 
     @Override
@@ -55,13 +58,10 @@ public class ParameterData {
         if (!(obj instanceof ParameterData other)) {
             return false;
         }
-        return rawTypeString().equals(other.rawTypeString());
+        return type.toString().equals(other.type.toString());
     }
 
-    public String rawTypeString() {
-        if (type instanceof ParameterizedTypeName parameterizedTypeName) {
-            return parameterizedTypeName.rawType().canonicalName();
-        }
-        return type.toString();
+    public boolean precedes(ParameterData other) {
+        return other.type.getClass() == ClassName.class && type.getClass() != ClassName.class;
     }
 }

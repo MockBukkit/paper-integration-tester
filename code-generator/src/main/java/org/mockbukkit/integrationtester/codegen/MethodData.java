@@ -18,8 +18,9 @@ public class MethodData {
     private final boolean isStatic;
     private final boolean isAbstract;
     private final boolean isDefault;
+    private final boolean isPublic;
 
-    private MethodData(String methodName, ParameterData[] parameterData, TypeName methodReturnType, String[] methodAnnotations, TypeVariableName[] methodGenerics, boolean isStatic, boolean isAbstract, boolean isDefault) {
+    private MethodData(String methodName, ParameterData[] parameterData, TypeName methodReturnType, String[] methodAnnotations, TypeVariableName[] methodGenerics, boolean isStatic, boolean isAbstract, boolean isDefault, boolean isPublic) {
         this.methodName = methodName;
         this.parameterData = parameterData;
         this.methodReturnType = methodReturnType;
@@ -28,22 +29,24 @@ public class MethodData {
         this.isStatic = isStatic;
         this.isAbstract = isAbstract;
         this.isDefault = isDefault;
+        this.isPublic = isPublic;
     }
 
-    public static MethodData from(Method method, Map<Class<?>, ClassName> classNames, boolean isAbstract, Map<String, String> typeConversions) {
+    public static MethodData from(Method method, Map<Class<?>, ClassName> classNames, boolean isImplementation, Map<String, String> typeConversions) {
         List<TypeVariableName> methodGenerics = new ArrayList<>();
         for (@NotNull TypeVariable<Method> typeParameter : method.getTypeParameters()) {
-            methodGenerics.add(Util.getTypeVariableName(typeParameter, classNames));
+            methodGenerics.add(Util.getTypeVariableName(typeParameter, classNames, typeConversions));
         }
         return new MethodData(
                 method.getName(),
                 ParameterData.from(method, classNames, typeConversions),
                 Util.getTypeName(method.getGenericReturnType(), typeConversions, classNames),
-                Util.getAnnotationTypeNames(method, classNames, new HashMap<>()).toArray(String[]::new),
+                Util.getAnnotationTypeNames(method, classNames).toArray(String[]::new),
                 methodGenerics.toArray(TypeVariableName[]::new),
                 java.lang.reflect.Modifier.isStatic(method.getModifiers()),
-                isAbstract,
-                method.isDefault()
+                java.lang.reflect.Modifier.isAbstract(method.getModifiers()) && !isImplementation,
+                method.isDefault(),
+                java.lang.reflect.Modifier.isPublic(method.getModifiers())
         );
     }
 
@@ -59,12 +62,12 @@ public class MethodData {
             String parameterString = className + ".class" + generateParameterString();
             ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
             methodSpec.addStatement((!methodReturnType.toString().equals("void") ? "return " : "") + "$T.handle($S, $L)", mirrorHandler, methodName, parameterString);
-            methodSpec.addModifiers(javax.lang.model.element.Modifier.PUBLIC, javax.lang.model.element.Modifier.STATIC);
+            methodSpec.addModifiers(isPublic ? javax.lang.model.element.Modifier.PUBLIC : javax.lang.model.element.Modifier.PROTECTED, javax.lang.model.element.Modifier.STATIC);
         } else if (isAbstract && !isDefault) {
-            methodSpec.addModifiers(javax.lang.model.element.Modifier.PUBLIC, javax.lang.model.element.Modifier.ABSTRACT);
+            methodSpec.addModifiers(isPublic ? javax.lang.model.element.Modifier.PUBLIC : javax.lang.model.element.Modifier.PROTECTED, javax.lang.model.element.Modifier.ABSTRACT);
         } else {
             String parameterString = "this" + generateParameterString();
-            methodSpec.addModifiers(Modifier.PUBLIC);
+            methodSpec.addModifiers(isPublic ? javax.lang.model.element.Modifier.PUBLIC : javax.lang.model.element.Modifier.PROTECTED);
             ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
             methodSpec.addStatement((!methodReturnType.toString().equals("void") ? "return " : "") + "$T.handle($S, $L)", mirrorHandler, methodName, parameterString);
         }
@@ -84,7 +87,7 @@ public class MethodData {
 
     @Override
     public int hashCode() {
-        return Objects.hashCode(Objects.hashCode((Object[]) parameterData), methodName);
+        return Objects.hashCode(Objects.hashCode((Object[]) parameterData), methodReturnType.toString());
     }
 
     @Override
@@ -92,18 +95,18 @@ public class MethodData {
         if (!(obj instanceof MethodData methodData)) {
             return false;
         }
-        return methodName.equals(methodData.methodName) && Arrays.equals(parameterData, methodData.parameterData);
+        return methodReturnType.toString().equals(methodData.methodReturnType.toString()) && Arrays.equals(parameterData, methodData.parameterData);
     }
 
-    public boolean precedes(MethodData methodData) {
-        if (methodData.methodReturnType.getClass() == ClassName.class) {
-            return true;
+    public boolean precedes(MethodData other) {
+        if(other.parameterData.length != parameterData.length) {
+            return false;
         }
-        for (ParameterData parameterData1 : methodData.parameterData) {
-            if (parameterData1.type.getClass() == ClassName.class) {
+        for (int i = 0; i < parameterData.length; i++) {
+            if (!parameterData[i].precedes(other.parameterData[i])) {
                 return false;
             }
         }
-        return true;
+        return other.methodReturnType.getClass() == ClassName.class && methodReturnType.getClass() != ClassName.class;
     }
 }

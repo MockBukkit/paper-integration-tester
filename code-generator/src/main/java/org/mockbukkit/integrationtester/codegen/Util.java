@@ -32,8 +32,11 @@ public class Util {
                 return TypeVariableName.get(redefinedType);
             }
         }
-        if (type instanceof GenericArrayType array) {
-            return ArrayTypeName.of(getTypeName(array.getGenericComponentType(), typeRedefinitions, classNames));
+        if (type instanceof Class<?> clazz && clazz.isArray()) {
+            return ArrayTypeName.of(getTypeName(clazz.getComponentType(), typeRedefinitions, classNames));
+        }
+        if (type instanceof GenericArrayType genericArrayType) {
+            return ArrayTypeName.of(getTypeName(genericArrayType.getGenericComponentType(), typeRedefinitions, classNames));
         }
         if (type.getTypeName().contains(".")) {
             return ClassName.bestGuess(fixTypeName(type.getTypeName(), classNames, typeRedefinitions));
@@ -77,7 +80,7 @@ public class Util {
     private static Map<String, String> getRedefinitions(Type[] childTypeArguments, Type[] superTypeVariables, Map<Class<?>, ClassName> classNames, Map<String, String> childRedefinitions) {
         Map<String, String> redefinitions = new HashMap<>();
         for (int i = 0; i < childTypeArguments.length; i++) {
-            redefinitions.put(getTypeName(superTypeVariables[i], childRedefinitions, classNames).toString(), getTypeName(childTypeArguments[i], childRedefinitions, classNames).toString());
+            redefinitions.put(superTypeVariables[i].getTypeName(), getTypeName(childTypeArguments[i], childRedefinitions, classNames).toString());
         }
         for (Map.Entry<String, String> redefinition : new HashSet<>(redefinitions.entrySet())) {
             redefinitions.put(redefinition.getKey(), childRedefinitions.getOrDefault(redefinition.getKey(), redefinition.getValue()));
@@ -85,10 +88,10 @@ public class Util {
         return redefinitions;
     }
 
-    public static TypeVariableName getTypeVariableName(TypeVariable<?> typeVariable, Map<Class<?>, ClassName> classNames) {
+    public static TypeVariableName getTypeVariableName(TypeVariable<?> typeVariable, Map<Class<?>, ClassName> classNames, Map<String, String> typeVariableConversions) {
         String name = typeVariable.getName();
         Type[] bounds = typeVariable.getBounds();
-        return TypeVariableName.get(fixTypeName(name, classNames, new HashMap<>()), getTypeNames(bounds, new HashMap<>(), classNames, true));
+        return TypeVariableName.get(name, getTypeNames(bounds, typeVariableConversions, classNames, true));
     }
 
     private static String fixTypeName(String name, Map<Class<?>, ClassName> classNames, Map<String, String> typeVariableConversions) {
@@ -133,7 +136,7 @@ public class Util {
         return typeVariableNames.toArray(TypeName[]::new);
     }
 
-    public static List<String> getAnnotationTypeNames(AnnotatedElement annotatedElement, Map<Class<?>, ClassName> classNames, Map<String, String> typeVariableConversions) {
+    public static List<String> getAnnotationTypeNames(AnnotatedElement annotatedElement, Map<Class<?>, ClassName> classNames) {
         List<String> output = new ArrayList<>();
         for (Annotation annotationInfo : annotatedElement.getAnnotations()) {
             if (annotationInfo.annotationType().getPackageName().startsWith("jdk.internal")) {
@@ -142,7 +145,7 @@ public class Util {
             if (!annotationInfo.annotationType().accessFlags().contains(AccessFlag.PUBLIC)) {
                 continue;
             }
-            output.add(Util.fixTypeName(annotationInfo.annotationType().getName(), classNames, typeVariableConversions));
+            output.add(Util.fixTypeName(annotationInfo.annotationType().getName(), classNames, new HashMap<>()));
         }
         return output;
     }
