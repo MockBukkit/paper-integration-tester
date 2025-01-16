@@ -17,14 +17,20 @@ public class Util {
         }
         if (type instanceof WildcardType wildcardType) {
             if (wildcardType.getLowerBounds().length > 0) {
-                return WildcardTypeName.subtypeOf(getTypeNames(wildcardType.getLowerBounds(), typeRedefinitions, classNames, true)[0]);
+                return WildcardTypeName.supertypeOf(getTypeNames(wildcardType.getLowerBounds(), typeRedefinitions, classNames, true)[0]);
             } else if (!wildcardType.getUpperBounds()[0].getTypeName().equals(Object.class.getName())) {
-                return WildcardTypeName.supertypeOf(getTypeNames(wildcardType.getUpperBounds(), typeRedefinitions, classNames, true)[0]);
+                return WildcardTypeName.subtypeOf(getTypeNames(wildcardType.getUpperBounds(), typeRedefinitions, classNames, true)[0]);
             }
             return WildcardTypeName.get(wildcardType);
         }
         if (type instanceof TypeVariable) {
-            return TypeVariableName.get(fixTypeName(type.getTypeName(), classNames, typeRedefinitions));
+            String redefinedType = typeRedefinitions.getOrDefault(type.getTypeName(), ((TypeVariable<?>) type).getName());
+            try {
+                getClass(redefinedType); // If class can be found
+                return ClassName.bestGuess(redefinedType);
+            } catch (ClassNotFoundException e) {
+                return TypeVariableName.get(redefinedType);
+            }
         }
         if (type instanceof GenericArrayType array) {
             return ArrayTypeName.of(getTypeName(array.getGenericComponentType(), typeRedefinitions, classNames));
