@@ -1,3 +1,6 @@
+# Work In Progress
+This project does not even compile at the moment
+
 ## About
 
 This is currently a project made to test MockBukkit against a real paper server. With further expansion it might be
