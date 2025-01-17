@@ -5,10 +5,12 @@ import com.palantir.javapoet.ClassName;
 import com.palantir.javapoet.ParameterSpec;
 import com.palantir.javapoet.TypeName;
 
-import java.lang.reflect.Method;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Executable;
 import java.lang.reflect.Parameter;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -28,10 +30,18 @@ public class ParameterData {
         return name;
     }
 
-    public static ParameterData[] from(Method method, Map<Class<?>, ClassName> classNames, Map<String, String> redefinitions) {
+    public static ParameterData[] from(Executable executable, Map<Class<?>, ClassName> classNames, Map<String, String> redefinitions) {
+
         List<ParameterData> output = new ArrayList<>();
-        Type[] genericParameterInfo = method.getGenericParameterTypes();
-        Parameter[] parameters = method.getParameters();
+        Type[] genericParameterInfo = executable.getGenericParameterTypes();
+        Parameter[] parameters = executable.getParameters();
+        if (genericParameterInfo.length != parameters.length) {
+            if (executable instanceof Constructor<?> && executable.getDeclaringClass().isEnum()) {
+                parameters = Arrays.copyOfRange(parameters, 2, parameters.length);
+            } else {
+                throw new RuntimeException("Parsing issue for executable " + executable);
+            }
+        }
         for (int i = 0; i < parameters.length; i++) {
             output.add(new ParameterData(parameters[i].getName(),
                     Util.getTypeName(genericParameterInfo[i], redefinitions, classNames),

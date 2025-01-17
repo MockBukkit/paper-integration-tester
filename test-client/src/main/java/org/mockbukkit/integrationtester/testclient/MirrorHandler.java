@@ -6,11 +6,20 @@ public class MirrorHandler {
         return null;
     }
 
-    public static <T> T handleStatic(String functionName, Class<?> clazz, Object... parameters){
+    public static <T> T handleStatic(String functionName, Class<?> clazz, Object... parameters) {
         return null;
     }
 
-    public static <T> T newStaticVariable(String variableName, Class<?> clazz){
+    public static <T> T handleField(String fieldName, Object fieldOwner) {
         return null;
     }
+
+    public static <T> T handleStaticField(String fieldName, Class<?> fieldOwner) {
+        return null;
+    }
+
+    public static void trackNew(Object newObject, Object... parameters) {
+
+    }
+
 }

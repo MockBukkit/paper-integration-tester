@@ -11,9 +11,7 @@ import org.jetbrains.annotations.Nullable;
 import javax.lang.model.element.Modifier;
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.lang.reflect.TypeVariable;
+import java.lang.reflect.*;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -24,6 +22,7 @@ public class CodeGenerator {
     private final Map<Class<?>, ClassName> classNames = new HashMap<>();
     private final Set<Class<?>> alreadyScanned = new HashSet<>();
     private final static Pattern PACKAGE_NAME = Pattern.compile("^(.+)\\.[A-Z]");
+    private static final ClassName MIRROR_HANDLER = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
 
     public static void main(String[] args) {
         if (args.length != 1) {
@@ -126,7 +125,8 @@ public class CodeGenerator {
         }
         List<MethodSpec> methodSpecs = generateMethods(classToReplicate, true, simplifiedName, redefinitions);
         mirror.addMethods(methodSpecs);
-        fillFields(mirror, classToReplicate, redefinitions);
+        List<FieldSpec> fieldSpecList = generateFields(mirror, classToReplicate, redefinitions);
+        mirror.addFields(fieldSpecList);
         if (java.lang.reflect.Modifier.isStatic(classToReplicate.getModifiers())) {
             mirror.addModifiers(Modifier.STATIC);
         }
@@ -154,9 +154,13 @@ public class CodeGenerator {
             typeSpecBuilder = TypeSpec.enumBuilder(className).addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
         } else {
             typeSpecBuilder = TypeSpec.classBuilder(className).addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
+            if(java.lang.reflect.Modifier.isAbstract(classToReplicate.getModifiers())) {
+                typeSpecBuilder.addModifiers(Modifier.ABSTRACT);
+            }
             canHaveSuperClass = true;
         }
-        fillFields(typeSpecBuilder, classToReplicate, redefinitions);
+        List<FieldSpec> fieldSpecList = generateFields(typeSpecBuilder, classToReplicate, redefinitions);
+        typeSpecBuilder.addFields(fieldSpecList);
         if (!classToReplicate.isAnnotation()) {
             typeSpecBuilder.addSuperinterfaces(Arrays.stream(classToReplicate.getGenericInterfaces()).map(typeName -> Util.getTypeName(typeName, redefinitions.getOrDefault(classToReplicate, new HashMap<>()), classNames)).toList());
         }
@@ -172,13 +176,134 @@ public class CodeGenerator {
         if (java.lang.reflect.Modifier.isStatic(classToReplicate.getModifiers())) {
             typeSpecBuilder.addModifiers(Modifier.STATIC);
         }
-        if (java.lang.reflect.Modifier.isPublic(classToReplicate.getModifiers())) {
-            typeSpecBuilder.addModifiers(Modifier.PUBLIC);
-        }
+        typeSpecBuilder.addModifiers(Modifier.PUBLIC);
         if (java.lang.reflect.Modifier.isAbstract(classToReplicate.getModifiers()) && !classToReplicate.isInterface() && !classToReplicate.isEnum() && !classToReplicate.isRecord()) {
             typeSpecBuilder.addModifiers(Modifier.ABSTRACT);
         }
+        if (!classToReplicate.isRecord() && !classToReplicate.isInterface()) {
+            typeSpecBuilder.addMethods(generateConstructors(classToReplicate, redefinitions.getOrDefault(classToReplicate, new HashMap<>())));
+        }
         return typeSpecBuilder.build();
+    }
+
+    private List<MethodSpec> generateConstructors(Class<?> classToReplicate, Map<String, String> redefinitions) {
+        List<MethodSpec> output = new ArrayList<>();
+        boolean hasGeneratedEmptyConstructor = classToReplicate.isEnum();
+        for (Constructor<?> constructor : classToReplicate.getDeclaredConstructors()) {
+            if (constructor.isSynthetic()) {
+                continue;
+            }
+            if (constructor.getParameterCount() == 0) {
+                hasGeneratedEmptyConstructor = true;
+            }
+            output.add(generateConstructor(classToReplicate, constructor, redefinitions));
+            if (classToReplicate.isEnum()) {
+                return output;
+            }
+        }
+        if (!hasGeneratedEmptyConstructor) {
+            ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
+            CodeBlock.Builder codeBlockBuilder = CodeBlock.builder();
+            addSuperConstructorCall(classToReplicate, codeBlockBuilder, null);
+            fillFields(classToReplicate, codeBlockBuilder);
+            codeBlockBuilder.addStatement("$T.trackNew(this)", mirrorHandler);
+            MethodSpec.Builder constructorBuilder = MethodSpec.constructorBuilder()
+                    .addModifiers(Modifier.PROTECTED)
+                    .addCode(codeBlockBuilder.build());
+            if (classToReplicate.getSuperclass() != Object.class) {
+                constructorBuilder.addExceptions(Arrays.stream(getSuperConstructor(classToReplicate).getGenericExceptionTypes())
+                        .map(exception -> Util.getTypeName(exception, redefinitions, classNames))
+                        .toList());
+            }
+            output.add(constructorBuilder.build());
+        }
+        return output;
+    }
+
+    private MethodSpec generateConstructor(Class<?> classToReplicate, Constructor<?> constructor, Map<String, String> redefinitions) {
+        CodeBlock.Builder codeBlockBuilder = CodeBlock.builder();
+        addSuperConstructorCall(classToReplicate, codeBlockBuilder, redefinitions);
+        codeBlockBuilder.addStatement("$T.trackNew(this$L)", MIRROR_HANDLER, generateParameterString(constructor));
+        fillFields(classToReplicate, codeBlockBuilder);
+
+        MethodSpec.Builder builder = MethodSpec.constructorBuilder().addCode(codeBlockBuilder.build())
+                .addModifiers(classToReplicate.isEnum() ? Modifier.PRIVATE : Modifier.PUBLIC);
+        if (classToReplicate.isEnum()) {
+            return builder.build();
+        }
+        builder.addParameters(Arrays.stream(ParameterData.from(constructor, classNames, redefinitions))
+                .map(ParameterData::toParameterSpec)
+                .toList());
+        builder.addExceptions(Arrays.stream(constructor.getGenericExceptionTypes())
+                .map(exception -> Util.getTypeName(exception, redefinitions, classNames))
+                .toList());
+        return builder.build();
+    }
+
+    private void fillFields(Class<?> classToReplicate, CodeBlock.Builder codeBlockBuilder) {
+        for (Field field : classToReplicate.getDeclaredFields()) {
+            if (java.lang.reflect.Modifier.isStatic(field.getModifiers()) || !java.lang.reflect.Modifier.isPublic(field.getModifiers())) {
+                continue;
+            }
+            codeBlockBuilder.addStatement("this.$L = $T.handleField($S, this)", field.getName(), MIRROR_HANDLER, field.getName());
+        }
+    }
+
+    private String generateParameterString(Constructor<?> constructor) {
+        if (constructor.getParameters().length == 0 || constructor.getDeclaringClass().isEnum()) {
+            return "";
+        }
+        StringBuilder stringBuilder = new StringBuilder();
+        for (Parameter parameter : constructor.getParameters()) {
+            stringBuilder.append(", ");
+            stringBuilder.append(parameter.getName());
+        }
+        return stringBuilder.toString();
+    }
+
+    private void addSuperConstructorCall(Class<?> clazz, CodeBlock.Builder codeBlock, Map<String, String> redefinitions) {
+        if (clazz.getSuperclass() == null || clazz.getSuperclass() == Object.class || clazz.getSuperclass() == Enum.class) {
+            return;
+        }
+        if (classNames.containsKey(clazz.getSuperclass())) {
+            codeBlock.addStatement("super()");
+            return;
+        }
+        Constructor<?> chosenConstructor = getSuperConstructor(clazz);
+        if (chosenConstructor != null) {
+            generateSuperParametersString(chosenConstructor, redefinitions, codeBlock);
+        }
+    }
+
+    private static @Nullable Constructor<?> getSuperConstructor(Class<?> clazz) {
+        Constructor<?>[] constructors = clazz.getSuperclass().getDeclaredConstructors();
+        Constructor<?> chosenConstructor = null;
+        int parameterCount = Integer.MAX_VALUE;
+        for (Constructor<?> constructor : constructors) {
+            if (java.lang.reflect.Modifier.isPrivate(constructor.getModifiers())) {
+                continue;
+            }
+            if (constructor.getParameterCount() < parameterCount) {
+                chosenConstructor = constructor;
+                parameterCount = constructor.getParameterCount();
+            }
+        }
+        return chosenConstructor;
+    }
+
+    private void generateSuperParametersString(Constructor<?> superConstructor, Map<String, String> redefinitions, CodeBlock.Builder codeBlock) {
+        if (superConstructor.getParameterCount() == 0) {
+            codeBlock.addStatement("super()");
+            return;
+        }
+        StringBuilder stringBuilder = new StringBuilder();
+        for (Parameter ignored : superConstructor.getParameters()) {
+            stringBuilder.append("$T.mock($T.class), ");
+        }
+        stringBuilder.delete(stringBuilder.length() - 2, stringBuilder.length());
+        ClassName mockito = ClassName.get("org.mockito", "Mockito");
+        codeBlock.addStatement("super(" + stringBuilder + ")", Arrays.stream(superConstructor.getParameters())
+                .flatMap(parameter -> Stream.of(mockito, Util.getTypeName(parameter.getType(), redefinitions, classNames))).toArray());
     }
 
     private List<MethodSpec> generateMethods(Class<?> classToReplicate, boolean isImplementation, String className, Map<Class<?>, Map<String, String>> redefinitions) {
@@ -188,7 +313,7 @@ public class CodeGenerator {
             if (isMethodBanned(method, classToReplicate)) {
                 continue;
             }
-            if (!java.lang.reflect.Modifier.isPublic(method.getModifiers()) && !java.lang.reflect.Modifier.isProtected(method.getModifiers()) && !java.lang.reflect.Modifier.isAbstract(method.getModifiers())) {
+            if (java.lang.reflect.Modifier.isPrivate(method.getModifiers())) {
                 continue;
             }
             if (isImplementation && method.isDefault()) {
@@ -222,24 +347,7 @@ public class CodeGenerator {
         methodData.add(new Pair<>(methodData1, method));
     }
 
-    private boolean isChildMethod(Method method1, Method method2) {
-        Class<?>[] methodData1 = Stream.concat(Stream.of(method1.getReturnType()), Arrays.stream(method1.getParameterTypes())).toArray(Class[]::new);
-        Class<?>[] methodData2 = Stream.concat(Stream.of(method2.getReturnType()), Arrays.stream(method2.getParameterTypes())).toArray(Class[]::new);
-        if (methodData1.length != methodData2.length) {
-            return false;
-        }
-        if (!method1.getName().equals(method2.getName())) {
-            return false;
-        }
-        for (int i = 0; i < methodData1.length; i++) {
-            if (!methodData2[i].isAssignableFrom(methodData1[i])) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private void fillFields(TypeSpec.Builder typeSpec, Class<?> clazz, Map<Class<?>, Map<String, String>> redefinitions) {
+    private List<FieldSpec> generateFields(TypeSpec.Builder typeSpec, Class<?> clazz, Map<Class<?>, Map<String, String>> redefinitions) {
         List<FieldSpec> fields = new ArrayList<>();
         for (Field field : clazz.getDeclaredFields()) {
             FieldSpec.Builder fieldSpec = FieldSpec.builder(Util.getTypeName(field.getGenericType(), redefinitions.getOrDefault(clazz, new HashMap<>()), classNames), field.getName());
@@ -270,12 +378,12 @@ public class CodeGenerator {
             if (java.lang.reflect.Modifier.isFinal(field.getModifiers()) && java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
                 ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
                 fieldSpec.initializer(CodeBlock.builder()
-                        .addStatement("$T.newStaticVariable($S, $T.class)", mirrorHandler, field.getName(), classNames.getOrDefault(clazz, ClassName.get(clazz)))
+                        .addStatement("$T.handleStaticField($S, $T.class)", mirrorHandler, field.getName(), classNames.getOrDefault(clazz, ClassName.get(clazz)))
                         .build());
             }
             fields.add(fieldSpec.build());
         }
-        typeSpec.addFields(fields);
+        return fields;
     }
 
     private boolean isMethodBanned(Method method, Class<?> classToReplicate) {

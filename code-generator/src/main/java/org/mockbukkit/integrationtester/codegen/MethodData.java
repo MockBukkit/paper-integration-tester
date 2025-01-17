@@ -22,8 +22,9 @@ public class MethodData {
     private final boolean isAbstract;
     private final boolean isDefault;
     private final boolean isPublic;
+    private final boolean varArgs;
 
-    private MethodData(String methodName, ParameterData[] parameterData, TypeName methodReturnType, String[] methodAnnotations, TypeVariableName[] methodGenerics, boolean isStatic, boolean isAbstract, boolean isDefault, boolean isPublic) {
+    private MethodData(String methodName, ParameterData[] parameterData, TypeName methodReturnType, String[] methodAnnotations, TypeVariableName[] methodGenerics, boolean isStatic, boolean isAbstract, boolean isDefault, boolean isPublic, boolean varArgs) {
         this.methodName = methodName;
         this.parameterData = parameterData;
         this.methodReturnType = methodReturnType;
@@ -33,6 +34,7 @@ public class MethodData {
         this.isAbstract = isAbstract;
         this.isDefault = isDefault;
         this.isPublic = isPublic;
+        this.varArgs = varArgs;
     }
 
     public static MethodData from(Method method, Map<Class<?>, ClassName> classNames, boolean isImplementation, boolean isEnum, Map<String, String> typeConversions) {
@@ -49,7 +51,8 @@ public class MethodData {
                 java.lang.reflect.Modifier.isStatic(method.getModifiers()),
                 java.lang.reflect.Modifier.isAbstract(method.getModifiers()) && !isImplementation && !isEnum,
                 method.isDefault(),
-                java.lang.reflect.Modifier.isPublic(method.getModifiers())
+                java.lang.reflect.Modifier.isPublic(method.getModifiers()),
+                method.isVarArgs()
         );
     }
 
@@ -64,7 +67,7 @@ public class MethodData {
         if (isStatic) {
             String parameterString = className + ".class" + generateParameterString();
             ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
-            methodSpec.addStatement((!methodReturnType.toString().equals("void") ? "return " : "") + "$T.handle($S, $L)", mirrorHandler, methodName, parameterString);
+            methodSpec.addStatement((!methodReturnType.toString().equals("void") ? "return " : "") + "$T.handleStatic($S, $L)", mirrorHandler, methodName, parameterString);
             methodSpec.addModifiers(isPublic ? javax.lang.model.element.Modifier.PUBLIC : javax.lang.model.element.Modifier.PROTECTED, javax.lang.model.element.Modifier.STATIC);
         } else if (isAbstract && !isDefault) {
             methodSpec.addModifiers(isPublic ? javax.lang.model.element.Modifier.PUBLIC : javax.lang.model.element.Modifier.PROTECTED, javax.lang.model.element.Modifier.ABSTRACT);
@@ -77,6 +80,7 @@ public class MethodData {
         if (isDefault) {
             methodSpec.addModifiers(Modifier.DEFAULT);
         }
+        methodSpec.varargs(varArgs);
         return methodSpec.build();
     }
 
