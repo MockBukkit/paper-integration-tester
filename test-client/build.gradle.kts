@@ -27,6 +27,7 @@ dependencies {
     implementation("org.mockito:mockito-core:5.15.2")
     implementation("org.junit.jupiter:junit-jupiter:5.11.3")
     compileOnly("io.papermc.paper:paper-api:1.21.3-R0.1-SNAPSHOT")
+    implementation("org.testcontainers:yugabytedb:1.20.4")
 }
 
 tasks.test {
