@@ -154,7 +154,7 @@ public class CodeGenerator {
             typeSpecBuilder = TypeSpec.enumBuilder(className).addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
         } else {
             typeSpecBuilder = TypeSpec.classBuilder(className).addMethods(generateMethods(classToReplicate, false, className.simpleName(), redefinitions));
-            if(java.lang.reflect.Modifier.isAbstract(classToReplicate.getModifiers())) {
+            if (java.lang.reflect.Modifier.isAbstract(classToReplicate.getModifiers())) {
                 typeSpecBuilder.addModifiers(Modifier.ABSTRACT);
             }
             canHaveSuperClass = true;
@@ -206,7 +206,7 @@ public class CodeGenerator {
             CodeBlock.Builder codeBlockBuilder = CodeBlock.builder();
             addSuperConstructorCall(classToReplicate, codeBlockBuilder, null);
             fillFields(classToReplicate, codeBlockBuilder);
-            codeBlockBuilder.addStatement("$T.trackNew(this)", mirrorHandler);
+            codeBlockBuilder.addStatement("$T.trackNew(this, $S)", mirrorHandler, classToReplicate);
             MethodSpec.Builder constructorBuilder = MethodSpec.constructorBuilder()
                     .addModifiers(Modifier.PROTECTED)
                     .addCode(codeBlockBuilder.build());
@@ -223,7 +223,7 @@ public class CodeGenerator {
     private MethodSpec generateConstructor(Class<?> classToReplicate, Constructor<?> constructor, Map<String, String> redefinitions) {
         CodeBlock.Builder codeBlockBuilder = CodeBlock.builder();
         addSuperConstructorCall(classToReplicate, codeBlockBuilder, redefinitions);
-        codeBlockBuilder.addStatement("$T.trackNew(this$L)", MIRROR_HANDLER, generateParameterString(constructor));
+        codeBlockBuilder.addStatement("$T.trackNew(this, $S$L)", MIRROR_HANDLER, classToReplicate, generateParameterString(constructor));
         fillFields(classToReplicate, codeBlockBuilder);
 
         MethodSpec.Builder builder = MethodSpec.constructorBuilder().addCode(codeBlockBuilder.build())
@@ -245,7 +245,7 @@ public class CodeGenerator {
             if (java.lang.reflect.Modifier.isStatic(field.getModifiers()) || !java.lang.reflect.Modifier.isPublic(field.getModifiers())) {
                 continue;
             }
-            codeBlockBuilder.addStatement("this.$L = $T.handleField($S, this)", field.getName(), MIRROR_HANDLER, field.getName());
+            codeBlockBuilder.addStatement("this.$L = $T.handleField($S, $S, this)", field.getName(), MIRROR_HANDLER, field.getName(), classToReplicate);
         }
     }
 
@@ -324,7 +324,7 @@ public class CodeGenerator {
             }
             insertMethodData(method, MethodData.from(method, classNames, isImplementation, classToReplicate.isEnum(), redefinitions.getOrDefault(method.getDeclaringClass(), new HashMap<>())), methodData);
         }
-        return methodData.stream().map(Pair::t1).map(methodData1 -> methodData1.toMethodSpec(className)).toList();
+        return methodData.stream().map(Pair::t1).map(methodData1 -> methodData1.toMethodSpec(classToReplicate)).toList();
     }
 
     private Method[] findNecessaryMethods(Class<?> clazz) {
@@ -378,7 +378,7 @@ public class CodeGenerator {
             if (java.lang.reflect.Modifier.isFinal(field.getModifiers()) && java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
                 ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
                 fieldSpec.initializer(CodeBlock.builder()
-                        .addStatement("$T.handleStaticField($S, $T.class)", mirrorHandler, field.getName(), classNames.getOrDefault(clazz, ClassName.get(clazz)))
+                        .addStatement("$T.handleStaticField($S, $S)", mirrorHandler, field.getName(), clazz)
                         .build());
             }
             fields.add(fieldSpec.build());

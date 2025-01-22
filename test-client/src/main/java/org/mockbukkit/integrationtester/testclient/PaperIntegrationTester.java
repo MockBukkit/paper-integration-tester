@@ -11,8 +11,7 @@ public class PaperIntegrationTester implements AutoCloseable {
     public PaperIntegrationTester(Class<?>... plugins) {
         container = new GenericContainer<>(DockerImageName.parse("itzg/minecraft-server"))
                 .withExposedPorts(25565)
-                .withEnv("EULA", "TRUE")
-                .withCopyFileToContainer();
+                .withEnv("EULA", "TRUE");
         synchronized (container) {
             new Thread(container::start).start();
         }

@@ -56,7 +56,7 @@ public class MethodData {
         );
     }
 
-    public MethodSpec toMethodSpec(String className) {
+    public MethodSpec toMethodSpec(Class<?> clazz) {
         MethodSpec.Builder methodSpec = MethodSpec.methodBuilder(methodName)
                 .addAnnotations(Arrays.stream(methodAnnotations).map(name -> AnnotationSpec.builder(ClassName.bestGuess(name)).build()).toList())
                 .addParameters(Arrays.stream(parameterData).map(ParameterData::toParameterSpec).toList())
@@ -65,17 +65,15 @@ public class MethodData {
             methodSpec.addTypeVariable(typeParameter);
         }
         if (isStatic) {
-            String parameterString = className + ".class" + generateParameterString();
             ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
-            methodSpec.addStatement((!methodReturnType.toString().equals("void") ? "return " : "") + "$T.handleStatic($S, $L)", mirrorHandler, methodName, parameterString);
+            methodSpec.addStatement((!methodReturnType.toString().equals("void") ? "return " : "") + "$T.handleStatic($S, $S$L)", mirrorHandler, methodName, clazz, generateParameterString());
             methodSpec.addModifiers(isPublic ? javax.lang.model.element.Modifier.PUBLIC : javax.lang.model.element.Modifier.PROTECTED, javax.lang.model.element.Modifier.STATIC);
         } else if (isAbstract && !isDefault) {
             methodSpec.addModifiers(isPublic ? javax.lang.model.element.Modifier.PUBLIC : javax.lang.model.element.Modifier.PROTECTED, javax.lang.model.element.Modifier.ABSTRACT);
         } else {
-            String parameterString = "this" + generateParameterString();
             methodSpec.addModifiers(isPublic ? javax.lang.model.element.Modifier.PUBLIC : javax.lang.model.element.Modifier.PROTECTED);
             ClassName mirrorHandler = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
-            methodSpec.addStatement((!methodReturnType.toString().equals("void") ? "return " : "") + "$T.handle($S, $L)", mirrorHandler, methodName, parameterString);
+            methodSpec.addStatement((!methodReturnType.toString().equals("void") ? "return " : "") + "$T.handle($S, $S, this$L)", mirrorHandler, methodName, clazz, generateParameterString());
         }
         if (isDefault) {
             methodSpec.addModifiers(Modifier.DEFAULT);
