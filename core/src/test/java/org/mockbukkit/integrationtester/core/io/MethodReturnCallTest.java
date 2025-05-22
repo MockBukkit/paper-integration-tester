@@ -9,7 +9,7 @@ import java.io.PipedOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-class NewObjectCallTest {
+class MethodReturnCallTest {
 
     private PipedInputStream input;
     private PipedOutputStream output;
@@ -22,9 +22,9 @@ class NewObjectCallTest {
 
     @Test
     void sendAndReceive() {
-        NewObjectCall target = new NewObjectCall(20, "Hello World");
+        MethodReturnCall target = new MethodReturnCall(20, "Hello World");
         target.send(output);
-        NewObjectCall created = NewObjectCall.receive(input);
+        MethodReturnCall created = MethodReturnCall.receive(input);
         assertEquals(target, created);
     }
 }

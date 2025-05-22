@@ -1,5 +1,10 @@
 package org.mockbukkit.integrationtester.codegen;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.stream.JsonWriter;
 import com.palantir.javapoet.*;
 import io.github.classgraph.ClassGraph;
 import io.github.classgraph.ClassInfo;
@@ -11,7 +16,9 @@ import org.jetbrains.annotations.Nullable;
 import javax.lang.model.element.Modifier;
 import java.io.File;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.lang.reflect.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -24,12 +31,14 @@ public class CodeGenerator {
     private final static Pattern PACKAGE_NAME = Pattern.compile("^(.+)\\.[A-Z]");
     private static final ClassName MIRROR_HANDLER = ClassName.get("org.mockbukkit.integrationtester.testclient", "MirrorHandler");
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException {
         if (args.length != 1) {
             System.out.print("Usage: <target folder>");
             return;
         }
         File outputFolder = new File(args[0]);
+        File classFolder = new File(outputFolder, "java");
+        File resourceFolder = new File(outputFolder, "resources");
         CodeGenerator codeGenerator = new CodeGenerator("org.mockbukkit.integrationtester");
         List<ClassInfo> outerClasses = new ArrayList<>();
         for (String operationIncludedPackage : operationIncludedPackages()) {
@@ -39,25 +48,43 @@ public class CodeGenerator {
             Pair<TypeSpec, TypeSpec> typeSpec = codeGenerator.createTypeSpec(classInfo);
             JavaFile javaFile = JavaFile.builder(codeGenerator.classNames.get(classInfo.loadClass()).packageName(), typeSpec.t1()).build();
             try {
-                if (!outputFolder.exists() && !outputFolder.mkdirs()) {
+                if (!classFolder.exists() && !classFolder.mkdirs()) {
                     throw new IOException("Could not generate directory, possible permission issue");
                 }
-                javaFile.writeTo(outputFolder);
+                javaFile.writeTo(classFolder);
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
             if (typeSpec.t2() != null) {
                 JavaFile javaFile2 = JavaFile.builder(codeGenerator.classNames.get(classInfo.loadClass()).packageName(), typeSpec.t2()).build();
                 try {
-                    if (!outputFolder.exists() && !outputFolder.mkdirs()) {
+                    if (!classFolder.exists() && !classFolder.mkdirs()) {
                         throw new IOException("Could not generate directory, possible permission issue");
                     }
-                    javaFile2.writeTo(outputFolder);
+                    javaFile2.writeTo(classFolder);
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
             }
         });
+        JsonObject mirrorClassRemapping = new JsonObject();
+        for (Map.Entry<Class<?>, ClassName> classEntry : codeGenerator.classNames.entrySet()) {
+            mirrorClassRemapping.add(classEntry.getKey().getName(), new JsonPrimitive(classEntry.getValue().canonicalName()));
+        }
+        if(!resourceFolder.exists() && !resourceFolder.mkdirs()) {
+            throw new IOException("Could not generate directory, possible permission issue");
+        }
+        File classRemappingFile = new File(resourceFolder, "classRemapping.json");
+        if(!classRemappingFile.exists() && !classRemappingFile.createNewFile()) {
+            throw new IOException("Could not create file, possible permission issue");
+        }
+        try (PrintWriter writer = new PrintWriter(classRemappingFile, StandardCharsets.UTF_8)) {
+            JsonWriter jsonWriter = new JsonWriter(writer);
+            jsonWriter.setIndent("  ");
+            Gson gson = new GsonBuilder().setPrettyPrinting().create();
+            gson.toJson(mirrorClassRemapping, jsonWriter);
+            writer.print("\n");
+        }
     }
 
     public CodeGenerator(String targetPackageName) {

@@ -17,7 +17,8 @@ java {
 }
 
 dependencies {
-    implementation("org.junit.jupiter:junit-jupiter:5.11.3")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")
+    implementation(project(":core"))
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
 }
 

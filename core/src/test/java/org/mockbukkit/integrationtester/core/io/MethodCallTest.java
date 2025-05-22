@@ -20,7 +20,6 @@ class MethodCallTest {
     private PipedInputStream input;
     private PipedOutputStream output;
     private static final ObjectRegistry registry1 = new ObjectRegistry();
-    private static final ObjectRegistry registry2 = new ObjectRegistry();
 
     @BeforeEach
     void setup() throws IOException {
@@ -54,7 +53,8 @@ class MethodCallTest {
                 Arguments.arguments(new MethodCall("hello", "world", object1, object2, object3)),
                 Arguments.arguments(new MethodCall("hello", "world!", object1, objects)),
                 Arguments.arguments(new MethodCall("hello", "world!", object1, testObjects)),
-                Arguments.arguments(new MethodCall("hello", "world!", object1, true))
+                Arguments.arguments(new MethodCall("hello", "world!", object1, true)),
+                Arguments.arguments(new MethodCall("hello", "world!", null, true))
         );
     }
 
